@@ -1,7 +1,7 @@
 import os
 import secrets
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app import service
 from app.models import AssignRequest, Experiment, ExperimentCreate, StatusUpdate
@@ -48,7 +48,23 @@ def update_status(experiment_id: str, update: StatusUpdate) -> Experiment:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
-# A plain def, so a cache refresh runs in the threadpool rather than on the event loop.
+async def read_raw_body(request: Request) -> bytes:
+    # The raw body rather than a pydantic parameter: sendBeacon posts text/plain to avoid a
+    # CORS preflight, and FastAPI would reject that content type with a 422.
+    return await request.body()
+
+
+# Plain defs, so cache refreshes and DB writes run in the threadpool, not on the event loop.
 @public.post("/assign")
 def assign(request: AssignRequest) -> dict:
     return {"assignments": service.assign_variants(request.visitor_id, request.experiment_ids)}
+
+
+@public.post("/expose", status_code=status.HTTP_202_ACCEPTED)
+def expose(raw_event: bytes = Depends(read_raw_body)) -> None:
+    service.track_exposure(raw_event)
+
+
+@public.post("/convert", status_code=status.HTTP_202_ACCEPTED)
+def convert(raw_event: bytes = Depends(read_raw_body)) -> None:
+    service.track_conversion(raw_event)

@@ -77,3 +77,27 @@ def update_status(experiment_id: str, from_status: str, to_status: str) -> bool:
             (to_status, experiment_id, from_status),
         )
         return cur.rowcount == 1
+
+
+def record_exposure(experiment_id: str, visitor_id: str, variant_key: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            insert into exposures (experiment_id, visitor_id, variant_key)
+            values (%s, %s, %s)
+            on conflict do nothing
+            """,
+            (experiment_id, visitor_id, variant_key),
+        )
+
+
+def record_conversion(experiment_id: str, visitor_id: str, variant_key: str, goal: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            insert into conversions (experiment_id, visitor_id, variant_key, goal)
+            values (%s, %s, %s, %s)
+            on conflict do nothing
+            """,
+            (experiment_id, visitor_id, variant_key, goal),
+        )

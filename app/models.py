@@ -43,3 +43,12 @@ class StatusUpdate(BaseModel):
 class AssignRequest(BaseModel):
     visitor_id: str
     experiment_ids: list[str]
+
+
+class ExposureEvent(BaseModel):
+    experiment_id: str
+    visitor_id: str = Field(min_length=1, max_length=256)
+
+
+class ConversionEvent(ExposureEvent):
+    goal: str = Field(default="default", min_length=1, max_length=128)

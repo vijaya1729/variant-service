@@ -8,7 +8,7 @@ from starlette.types import Receive, Scope, Send
 from app import db
 from app.routes import admin, public
 
-PUBLIC_PATHS = {"/assign"}
+PUBLIC_PATHS = {"/assign", "/expose", "/convert"}
 
 
 class PublicCORSMiddleware(CORSMiddleware):
