@@ -1,5 +1,9 @@
 import json
+import socket
+import time
+from collections.abc import Iterator
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
@@ -220,3 +224,38 @@ def test_cache_error_still_returns_202(path: str, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(service, "cache", BrokenCache())
 
     assert post(path, experiment_id="exp", visitor_id="visitor-1").status_code == 202
+
+
+@pytest.fixture
+def stalled_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    # The kernel accepts the TCP connection, then nothing ever answers, like a hung pooler.
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(8)
+        port = server.getsockname()[1]
+        monkeypatch.setenv("DATABASE_URL", f"postgresql://nobody@127.0.0.1:{port}/none")
+        yield
+
+
+def test_tracking_connect_gives_up_after_one_second(stalled_server: None) -> None:
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        db.record_exposure("exp", "visitor", "A")
+    assert time.monotonic() - started < 1.5
+
+
+def test_tracking_statement_is_cancelled_after_500ms(database: None) -> None:
+    db.create_experiment(make_experiment())
+    with db.connect() as blocker:
+        # Uncommitted, so the tracked insert has to wait on this row's unique key.
+        blocker.execute(
+            "insert into exposures (experiment_id, visitor_id, variant_key) "
+            "values ('exp', 'visitor', 'A')"
+        )
+        started = time.monotonic()
+        with pytest.raises(psycopg.errors.QueryCanceled):
+            db.record_exposure("exp", "visitor", "A")
+        elapsed = time.monotonic() - started
+        blocker.rollback()
+
+    assert 0.4 < elapsed < 1.5

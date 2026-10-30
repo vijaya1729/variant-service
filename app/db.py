@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import psycopg
@@ -5,6 +6,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.models import Experiment, Variant
+
+TRACKING_CONNECT_TIMEOUT_SECONDS = 1.0
 
 _SELECT_EXPERIMENTS = """
     select e.id, e.salt, e.traffic, e.status, v.key, v.weight, v.payload
@@ -79,9 +82,22 @@ def update_status(experiment_id: str, from_status: str, to_status: str) -> bool:
         return cur.rowcount == 1
 
 
+async def _tracking_insert(sql: str, params: tuple) -> None:
+    # wait_for because psycopg raises any connect_timeout below 2s to 2s.
+    conn = await asyncio.wait_for(
+        psycopg.AsyncConnection.connect(os.environ["DATABASE_URL"], prepare_threshold=None),
+        TRACKING_CONNECT_TIMEOUT_SECONDS,
+    )
+    async with conn:
+        # SET LOCAL: a plain SET would outlive this transaction on the pooler's shared
+        # server connection and apply to whichever client gets that connection next.
+        await conn.execute("set local statement_timeout = '500ms'")
+        await conn.execute(sql, params)
+
+
 def record_exposure(experiment_id: str, visitor_id: str, variant_key: str) -> None:
-    with connect() as conn:
-        conn.execute(
+    asyncio.run(
+        _tracking_insert(
             """
             insert into exposures (experiment_id, visitor_id, variant_key)
             values (%s, %s, %s)
@@ -89,11 +105,12 @@ def record_exposure(experiment_id: str, visitor_id: str, variant_key: str) -> No
             """,
             (experiment_id, visitor_id, variant_key),
         )
+    )
 
 
 def record_conversion(experiment_id: str, visitor_id: str, variant_key: str, goal: str) -> None:
-    with connect() as conn:
-        conn.execute(
+    asyncio.run(
+        _tracking_insert(
             """
             insert into conversions (experiment_id, visitor_id, variant_key, goal)
             values (%s, %s, %s, %s)
@@ -101,6 +118,7 @@ def record_conversion(experiment_id: str, visitor_id: str, variant_key: str, goa
             """,
             (experiment_id, visitor_id, variant_key, goal),
         )
+    )
 
 
 def get_variant_counts(experiment_id: str, goal: str) -> list[dict]:
