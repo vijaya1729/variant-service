@@ -3,8 +3,15 @@ import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
-from app import service
-from app.models import AssignRequest, Experiment, ExperimentCreate, StatusUpdate
+from app import llm, service
+from app.models import (
+    AssignRequest,
+    Experiment,
+    ExperimentCreate,
+    GenerateRequest,
+    StatusUpdate,
+    Variant,
+)
 
 
 def require_admin(x_admin_key: str | None = Header(default=None)) -> None:
@@ -46,6 +53,33 @@ def update_status(experiment_id: str, update: StatusUpdate) -> Experiment:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "experiment not found") from exc
     except service.InvalidTransition as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+
+# A plain def, so the LLM call runs in the threadpool rather than on the event loop.
+@admin.post("/experiments/{experiment_id}/variants/{variant_key}/generate")
+def generate_variant_copy(
+    experiment_id: str, variant_key: str, request: GenerateRequest
+) -> Variant:
+    try:
+        return service.generate_variant_copy(experiment_id, variant_key, request)
+    except (service.ExperimentNotFound, service.VariantNotFound) as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "variant not found") from exc
+    except service.ExperimentNotDraft as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "copy can only be generated while the experiment is a draft"
+        ) from exc
+    except llm.GenerationFailed as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"{exc}; existing variant copy was left unchanged"
+        ) from exc
+
+
+@admin.post("/experiments/{experiment_id}/variants/{variant_key}/approve")
+def approve_variant(experiment_id: str, variant_key: str) -> Variant:
+    try:
+        return service.approve_variant(experiment_id, variant_key)
+    except (service.ExperimentNotFound, service.VariantNotFound) as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "variant not found") from exc
 
 
 @admin.get("/results/{experiment_id}")

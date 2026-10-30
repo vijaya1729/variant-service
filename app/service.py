@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from psycopg.errors import UniqueViolation
 from pydantic import ValidationError
 
-from app import db, stats
+from app import db, llm, stats
 from app.assignment import assign
 from app.config_cache import cache
 from app.models import (
@@ -14,6 +14,8 @@ from app.models import (
     ExperimentCreate,
     ExperimentStatus,
     ExposureEvent,
+    GenerateRequest,
+    Variant,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,14 @@ class InvalidTransition(Exception):
     pass
 
 
+class VariantNotFound(Exception):
+    pass
+
+
+class ExperimentNotDraft(Exception):
+    pass
+
+
 def create_experiment(experiment: ExperimentCreate) -> Experiment:
     try:
         db.create_experiment(experiment)
@@ -60,9 +70,41 @@ def change_status(experiment_id: str, status: ExperimentStatus) -> Experiment:
     experiment = get_experiment(experiment_id)
     if status not in TRANSITIONS[experiment.status]:
         raise InvalidTransition(f"cannot go from {experiment.status} to {status}")
+    unapproved = [variant.key for variant in experiment.variants if not variant.approved]
+    if status == "running" and unapproved:
+        raise InvalidTransition(f"unapproved variants: {', '.join(unapproved)}")
     if not db.update_status(experiment_id, experiment.status, status):
         raise InvalidTransition(f"{experiment_id} changed status concurrently")
     return experiment.model_copy(update={"status": status})
+
+
+def _get_variant(experiment: Experiment, variant_key: str) -> Variant:
+    for variant in experiment.variants:
+        if variant.key == variant_key:
+            return variant
+    raise VariantNotFound(variant_key)
+
+
+def generate_variant_copy(
+    experiment_id: str, variant_key: str, request: GenerateRequest
+) -> Variant:
+    experiment = get_experiment(experiment_id)
+    _get_variant(experiment, variant_key)
+    if experiment.status != "draft":
+        raise ExperimentNotDraft(experiment_id)
+
+    text, meta = llm.generate_copy(request.field, request.brief, request.tone)
+
+    if not db.save_generated_copy(experiment_id, variant_key, request.field, text, meta):
+        raise ExperimentNotDraft(experiment_id)
+    return _get_variant(get_experiment(experiment_id), variant_key)
+
+
+def approve_variant(experiment_id: str, variant_key: str) -> Variant:
+    experiment = get_experiment(experiment_id)
+    _get_variant(experiment, variant_key)
+    db.approve_variant(experiment_id, variant_key)
+    return _get_variant(get_experiment(experiment_id), variant_key)
 
 
 def assign_variants(visitor_id: str, experiment_ids: list[str]) -> dict[str, dict | None]:

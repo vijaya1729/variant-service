@@ -10,7 +10,7 @@ from app.models import Experiment, Variant
 TRACKING_CONNECT_TIMEOUT_SECONDS = 1.0
 
 _SELECT_EXPERIMENTS = """
-    select e.id, e.salt, e.traffic, e.status, v.key, v.weight, v.payload
+    select e.id, e.salt, e.traffic, e.status, v.key, v.weight, v.payload, v.source, v.approved
     from experiments e
     join variants v on v.experiment_id = e.id
 """
@@ -35,7 +35,13 @@ def _to_experiments(rows: list[dict]) -> list[Experiment]:
             },
         )
         experiment["variants"].append(
-            Variant(key=row["key"], weight=row["weight"], payload=row["payload"])
+            Variant(
+                key=row["key"],
+                weight=row["weight"],
+                payload=row["payload"],
+                source=row["source"],
+                approved=row["approved"],
+            )
         )
     return [Experiment(**experiment) for experiment in experiments.values()]
 
@@ -49,11 +55,20 @@ def create_experiment(experiment: Experiment) -> None:
         with conn.cursor() as cur:
             cur.executemany(
                 """
-                insert into variants (experiment_id, key, position, weight, payload)
-                values (%s, %s, %s, %s, %s)
+                insert into variants
+                    (experiment_id, key, position, weight, payload, source, approved)
+                values (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
-                    (experiment.id, variant.key, position, variant.weight, Jsonb(variant.payload))
+                    (
+                        experiment.id,
+                        variant.key,
+                        position,
+                        variant.weight,
+                        Jsonb(variant.payload),
+                        variant.source,
+                        variant.approved,
+                    )
                     for position, variant in enumerate(experiment.variants)
                 ],
             )
@@ -73,11 +88,60 @@ def list_running_experiments() -> list[Experiment]:
 
 
 def update_status(experiment_id: str, from_status: str, to_status: str) -> bool:
-    """Returns False if the experiment was no longer in from_status."""
+    """Returns False if the experiment left from_status or can't go live yet."""
+    with connect() as conn:
+        if not _lock_experiment(conn, experiment_id, from_status):
+            return False
+        if to_status == "running" and _has_unapproved_variant(conn, experiment_id):
+            return False
+        conn.execute(
+            "update experiments set status = %s, updated_at = now() where id = %s",
+            (to_status, experiment_id),
+        )
+        return True
+
+
+def _lock_experiment(conn: psycopg.Connection, experiment_id: str, status: str) -> bool:
+    # Status changes and generated copy both take this row lock, so copy can't be saved
+    # unapproved between an approval check and the experiment going live.
+    cur = conn.execute(
+        "select 1 from experiments where id = %s and status = %s for update",
+        (experiment_id, status),
+    )
+    return cur.fetchone() is not None
+
+
+def _has_unapproved_variant(conn: psycopg.Connection, experiment_id: str) -> bool:
+    cur = conn.execute(
+        "select 1 from variants where experiment_id = %s and not approved limit 1",
+        (experiment_id,),
+    )
+    return cur.fetchone() is not None
+
+
+def save_generated_copy(
+    experiment_id: str, variant_key: str, field: str, text: str, meta: dict
+) -> bool:
+    """Returns False if the experiment stopped being a draft during generation."""
+    with connect() as conn:
+        if not _lock_experiment(conn, experiment_id, "draft"):
+            return False
+        cur = conn.execute(
+            """
+            update variants
+            set payload = payload || %s, source = 'llm', approved = false, generation_meta = %s
+            where experiment_id = %s and key = %s
+            """,
+            (Jsonb({field: text}), Jsonb(meta), experiment_id, variant_key),
+        )
+        return cur.rowcount == 1
+
+
+def approve_variant(experiment_id: str, variant_key: str) -> bool:
     with connect() as conn:
         cur = conn.execute(
-            "update experiments set status = %s, updated_at = now() where id = %s and status = %s",
-            (to_status, experiment_id, from_status),
+            "update variants set approved = true where experiment_id = %s and key = %s",
+            (experiment_id, variant_key),
         )
         return cur.rowcount == 1
 

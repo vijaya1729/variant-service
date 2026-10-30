@@ -10,6 +10,8 @@ class Variant(BaseModel):
     key: str
     weight: int = Field(gt=0)
     payload: dict = {}
+    source: Literal["static", "llm"] = "static"
+    approved: bool = True
 
 
 class Experiment(BaseModel):
@@ -43,6 +45,12 @@ class StatusUpdate(BaseModel):
 class AssignRequest(BaseModel):
     visitor_id: str
     experiment_ids: list[str]
+
+
+class GenerateRequest(BaseModel):
+    field: str = Field(min_length=1, max_length=64)
+    brief: str = Field(min_length=1, max_length=2000)
+    tone: str | None = Field(default=None, max_length=64)
 
 
 class ExposureEvent(BaseModel):
