@@ -1,7 +1,9 @@
 import os
 import secrets
+import time
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from pydantic import ValidationError
 
 from app import llm, service
 from app.models import (
@@ -91,15 +93,25 @@ def get_results(experiment_id: str, goal: str = "default") -> dict:
 
 
 async def read_raw_body(request: Request) -> bytes:
-    # The raw body rather than a pydantic parameter: sendBeacon posts text/plain to avoid a
-    # CORS preflight, and FastAPI would reject that content type with a 422.
+    # The raw body rather than a pydantic parameter: the snippet posts text/plain to avoid
+    # a CORS preflight, and FastAPI would reject that content type with a 422.
     return await request.body()
 
 
 # Plain defs, so cache refreshes and DB writes run in the threadpool, not on the event loop.
 @public.post("/assign")
-def assign(request: AssignRequest) -> dict:
-    return {"assignments": service.assign_variants(request.visitor_id, request.experiment_ids)}
+def assign(response: Response, raw_request: bytes = Depends(read_raw_body)) -> dict:
+    started = time.perf_counter()
+    try:
+        request = AssignRequest.model_validate_json(raw_request)
+    except ValidationError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid assign request"
+        ) from exc
+    assignments = service.assign_variants(request.visitor_id, request.experiment_ids)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.2f}"
+    return {"assignments": assignments}
 
 
 @public.post("/expose", status_code=status.HTTP_202_ACCEPTED)

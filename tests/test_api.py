@@ -1,3 +1,6 @@
+import json
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 from psycopg.errors import UniqueViolation
@@ -91,6 +94,55 @@ def test_assign_returns_the_core_variant_and_payload(monkeypatch: pytest.MonkeyP
     assert post_assign(["exp"]) == {
         "exp": {"variant": expected.key, "payload": expected.payload}
     }
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    ["text/plain", "text/plain;charset=UTF-8", "application/json"],
+)
+def test_assign_accepts_text_plain_and_json(
+    content_type: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(service, "cache", StubCache(make_experiment()))
+
+    response = client.post(
+        "/assign",
+        content=json.dumps({"visitor_id": "visitor-1", "experiment_ids": ["exp"]}),
+        headers={"Content-Type": content_type},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["assignments"]["exp"] is not None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b"", id="empty"),
+        pytest.param(b"not json", id="not-json"),
+        pytest.param(b'{"visitor_id": "v"}', id="missing-experiments"),
+    ],
+)
+def test_assign_rejects_invalid_bodies(body: bytes) -> None:
+    response = client.post("/assign", content=body, headers={"Content-Type": "text/plain"})
+    assert response.status_code == 422
+
+
+def test_assign_reports_server_timing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(service, "cache", StubCache(make_experiment()))
+    body = {"visitor_id": "v", "experiment_ids": ["exp"]}
+
+    timing = client.post("/assign", json=body).headers["server-timing"]
+
+    assert re.fullmatch(r"app;dur=\d+\.\d{2}", timing)
+
+
+def test_assign_reports_server_timing_on_internal_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service, "cache", BrokenCache())
+    response = client.post("/assign", json={"visitor_id": "v", "experiment_ids": ["exp"]})
+    assert "server-timing" in response.headers
 
 
 def test_assign_nulls_unknown_paused_and_not_enrolled(monkeypatch: pytest.MonkeyPatch) -> None:

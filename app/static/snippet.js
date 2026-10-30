@@ -90,7 +90,7 @@
     try {
       const response = await fetch(endpoint + "/assign", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        // A string body is sent as text/plain, so cross-origin pages skip the CORS preflight.
         body: JSON.stringify({ visitor_id: visitor, experiment_ids: experiments }),
         signal: controller.signal,
       });
