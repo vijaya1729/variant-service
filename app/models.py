@@ -1,6 +1,9 @@
+import secrets
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+ExperimentStatus = Literal["draft", "running", "paused", "stopped"]
 
 
 class Variant(BaseModel):
@@ -14,7 +17,7 @@ class Experiment(BaseModel):
     salt: str
     traffic: int = Field(ge=0, le=100)
     variants: list[Variant] = Field(min_length=2)
-    status: Literal["draft", "running", "paused", "stopped"]
+    status: ExperimentStatus
 
     @field_validator("variants")
     @classmethod
@@ -25,3 +28,18 @@ class Experiment(BaseModel):
         if sum(variant.weight for variant in variants) != 100:
             raise ValueError("variant weights must sum to 100")
         return variants
+
+
+class ExperimentCreate(Experiment):
+    salt: str = Field(default_factory=lambda: secrets.token_hex(16))
+    # Only draft, so going live always passes through the status transitions.
+    status: Literal["draft"] = "draft"
+
+
+class StatusUpdate(BaseModel):
+    status: ExperimentStatus
+
+
+class AssignRequest(BaseModel):
+    visitor_id: str
+    experiment_ids: list[str]
