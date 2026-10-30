@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from starlette.types import Receive, Scope, Send
 
 from app import db
+from app.pages import pages
 from app.routes import admin, public
 
 PUBLIC_PATHS = {"/assign", "/expose", "/convert"}
@@ -32,6 +33,7 @@ app.add_middleware(
 )
 app.include_router(admin)
 app.include_router(public)
+app.include_router(pages)
 
 
 @app.get("/health")
