@@ -9,4 +9,5 @@ Each file runs once, in a single transaction, so a failed or repeated run change
 ```sh
 set -a; source .env; set +a
 .venv/bin/python scripts/migrate.py migrations/001_init.sql
+.venv/bin/python scripts/migrate.py migrations/002_generation_meta.sql
 ```
