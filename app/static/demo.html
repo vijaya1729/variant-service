@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Variant Demo</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1 id="headline">Ship better pages, one test at a time</h1>
+      <p class="muted">A demo landing page running the <code>cta-test</code> experiment.</p>
+      <div class="actions">
+        <button id="buy" type="button">Buy now</button>
+        <span id="buy-status" class="muted" role="status"></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Debug</h2>
+      <dl>
+        <dt>Visitor ID</dt><dd id="visitor">–</dd>
+        <dt>Variant</dt><dd id="variant">–</dd>
+        <dt>Assign latency</dt><dd id="latency">–</dd>
+      </dl>
+      <div class="actions">
+        <button id="new-visitor" class="secondary" type="button">New visitor</button>
+        <label><span><input id="service-down" type="checkbox"> Simulate service down</span></label>
+      </div>
+    </section>
+  </main>
+
+  <script src="/snippet.js"></script>
+  <script>
+    const EXPERIMENT = "cta-test";
+    const BAD_ENDPOINT = "https://service-down.invalid";
+
+    const headline = document.getElementById("headline");
+    const defaultHeadline = headline.textContent;
+    const serviceDown = document.getElementById("service-down");
+    const buyStatus = document.getElementById("buy-status");
+
+    function describe(assignment, error) {
+      if (error) return `none, default content (${error})`;
+      return assignment ? assignment.variant : "none, default content (not assigned)";
+    }
+
+    function start() {
+      headline.textContent = defaultHeadline;
+      buyStatus.textContent = "";
+      variants.run({
+        endpoint: serviceDown.checked ? BAD_ENDPOINT : location.origin,
+        experiments: [EXPERIMENT],
+        onAssign(assignments, info) {
+          const assignment = assignments[EXPERIMENT];
+          // A control variant may have no headline, and it still counts as shown.
+          if (assignment && assignment.payload.headline) {
+            headline.textContent = assignment.payload.headline;
+          }
+          document.getElementById("visitor").textContent = info.visitorId;
+          document.getElementById("variant").textContent = describe(assignment, info.error);
+          document.getElementById("latency").textContent = `${info.latencyMs.toFixed(1)} ms`;
+        },
+      });
+    }
+
+    document.getElementById("buy").addEventListener("click", () => {
+      variants.convert(EXPERIMENT);
+      buyStatus.textContent = "Conversion sent";
+    });
+    document.getElementById("new-visitor").addEventListener("click", () => {
+      variants.resetVisitor();
+      location.reload();
+    });
+    serviceDown.addEventListener("change", start);
+
+    start();
+  </script>
+</body>
+</html>
