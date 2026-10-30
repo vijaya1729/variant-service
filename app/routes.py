@@ -103,10 +103,12 @@ def assign(request: AssignRequest) -> dict:
 
 
 @public.post("/expose", status_code=status.HTTP_202_ACCEPTED)
-def expose(raw_event: bytes = Depends(read_raw_body)) -> None:
+def expose(raw_event: bytes = Depends(read_raw_body)) -> dict:
     service.track_exposure(raw_event)
+    return {"status": "accepted"}
 
 
 @public.post("/convert", status_code=status.HTTP_202_ACCEPTED)
-def convert(raw_event: bytes = Depends(read_raw_body)) -> None:
+def convert(raw_event: bytes = Depends(read_raw_body)) -> dict:
     service.track_conversion(raw_event)
+    return {"status": "accepted"}

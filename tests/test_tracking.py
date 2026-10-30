@@ -216,6 +216,39 @@ def test_unreachable_db_still_returns_202(path: str, monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.parametrize("path", ["/expose", "/convert"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b'{"experiment_id": "exp", "visitor_id": "v"}', id="recorded"),
+        pytest.param(b'{"experiment_id": "other", "visitor_id": "v"}', id="ignored"),
+        pytest.param(b"not json", id="malformed"),
+    ],
+)
+def test_response_body_is_always_accepted(
+    path: str, body: bytes, database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(monkeypatch, make_experiment())
+
+    response = client.post(path, content=body)
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+
+
+@pytest.mark.parametrize("path", ["/expose", "/convert"])
+def test_response_body_is_accepted_when_the_db_is_down(
+    path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(service, "cache", StubCache(make_experiment()))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody@127.0.0.1:1/none")
+
+    response = post(path, experiment_id="exp", visitor_id="visitor-1")
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+
+
+@pytest.mark.parametrize("path", ["/expose", "/convert"])
 def test_cache_error_still_returns_202(path: str, monkeypatch: pytest.MonkeyPatch) -> None:
     class BrokenCache:
         def get(self) -> dict[str, Experiment]:
