@@ -62,8 +62,7 @@ flowchart LR
 - **JS snippet**: generates/stores visitor ID, calls `/assign` with a hard timeout, falls back to control, sends exposure on render
 - **Assignment API**: pure function of (visitor_id, experiment config); no DB read on the hot path when the cache is warm
 - **Tracking API**: `/expose`, `/convert`; idempotent writes
-- **Config API**: create/update experiments, variants, allocations; triggers LLM generation
-- **Results API / page**: aggregates + stats
+- **Config API**: create experiments, status transitions (draft → running → paused → stopped), triggers LLM generation. Variants/weights immutable once running- **Results API / page**: aggregates + stats
 - **Storage**: Postgres (Supabase) via the transaction-mode connection pooler
 
 **Key decisions**
@@ -79,19 +78,19 @@ flowchart LR
 
 ## 3. Determinism and Distribution
 
-- `bucket = hash(experiment_id + ":" + visitor_id) mod 10000` using a stable hash (murmur3 / sha256), never a process-seeded hash
-- Buckets map onto cumulative allocation ranges, e.g. 90/10 → `[0, 9000)` A, `[9000, 10000)` B
-- Holdback / traffic %: buckets beyond the traffic allocation are not enrolled → served default
-- **Sticky:** pure function of inputs; identical across calls, instances, restarts
-- **Well distributed:** hash output is uniform; 10,000 buckets gives 0.01% allocation granularity
-- **Experiments independent:** salting with experiment_id decorrelates assignments across experiments
-- **Allocation changes mid-experiment:** would reshuffle visitors and bias results → allocations are locked once running; changes create a new experiment version (new salt)
-- **Evidence:**
-  - Determinism test: same input → same variant across 1,000 repeated calls and a fresh process
-  - Distribution test: 100k simulated visitors, 50/50 → `TODO` / `TODO`; 90/10 → `TODO` / `TODO`
-  - Independence test: correlation of assignment across two experiments ≈ 0 — `TODO`
-
----
+- Two independent hashes per visitor, both `sha256(...)` → first 8 bytes → `mod 10000` (never Python's process-salted `hash()`):
+  - `enroll = bucket(salt, "enroll", visitor_id)` — enrolled if `< traffic × 100`, else not enrolled → served default
+  - `variant = bucket(salt, "variant", visitor_id)` — mapped onto cumulative weight ranges, e.g. 90/10 → `[0, 9000)` A, `[9000, 10000)` B
+- **Why two hashes:** raising traffic % (e.g. 20 → 50) enrols new visitors without moving already-enrolled visitors to a different variant
+- **Sticky:** pure function of inputs; identical across calls, instances, restarts. Nothing is stored
+- **Well distributed:** sha256 output is uniform; 10,000 buckets gives 0.01% allocation granularity
+- **Experiments independent:** each experiment has its own salt, so assignments are uncorrelated across experiments
+- **Variant order is part of the contract:** ranges follow a fixed stored order (`position`); reordering would reshuffle visitors
+- **Allocation changes mid-experiment:** would reshuffle visitors and bias results → variants and weights are immutable once running; a change means a new experiment (new salt)
+- **Evidence** (100k seeded visitors, `pytest -s`):
+  - 50/50 → 49.87% / 50.13%; 90/10 → 90.05% / 9.95%
+  - Holdback traffic=20 → 19.99% enrolled
+  - Independence: joint cells 24.81–25.17% (target 25%),
 
 ## 4. API Overview
 
@@ -145,7 +144,7 @@ _Auth: admin API key for config/results; assign/track are public, scoped by a si
 | DB unavailable on tracking | Return fast; drop or buffer events (prefer small data loss over blocking the page) |
 | Unknown / paused experiment | Return control |
 | LLM failure at config time | Variant falls back to static copy; experiment still created |
-| Bad config pushed | Validation on write (allocations sum ≤ 100%, ≥ 2 variants, IDs unique) |
+| Bad config pushed | Validation on write (weights sum to 100, ≥ 2 variants, unique keys, traffic 0–100) |
 | Cold start (serverless) | Slower first request; snippet timeout still protects the page |
 
 - Snippet loads async and never blocks render; flicker trade-off (anti-flicker hide with a hard cap) noted
