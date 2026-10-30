@@ -48,6 +48,14 @@ def update_status(experiment_id: str, update: StatusUpdate) -> Experiment:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
+@admin.get("/results/{experiment_id}")
+def get_results(experiment_id: str, goal: str = "default") -> dict:
+    try:
+        return service.get_results(experiment_id, goal)
+    except service.ExperimentNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "experiment not found") from exc
+
+
 async def read_raw_body(request: Request) -> bytes:
     # The raw body rather than a pydantic parameter: sendBeacon posts text/plain to avoid a
     # CORS preflight, and FastAPI would reject that content type with a 422.

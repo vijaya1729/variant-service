@@ -101,3 +101,31 @@ def record_conversion(experiment_id: str, visitor_id: str, variant_key: str, goa
             """,
             (experiment_id, visitor_id, variant_key, goal),
         )
+
+
+def get_variant_counts(experiment_id: str, goal: str) -> list[dict]:
+    """One row per variant in position order, or no rows for an unknown experiment."""
+    # Starts from variants so a variant with no events still appears. The goal filter
+    # belongs in the join: in a where clause it would drop exposed non-converters.
+    with connect() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            select
+                v.key,
+                v.weight,
+                count(x.visitor_id) as exposures,
+                count(c.visitor_id) as conversions
+            from variants v
+            left join exposures x
+                on x.experiment_id = v.experiment_id and x.variant_key = v.key
+            left join conversions c
+                on c.experiment_id = x.experiment_id
+                and c.visitor_id = x.visitor_id
+                and c.goal = %s
+            where v.experiment_id = %s
+            group by v.key, v.weight, v.position
+            order by v.position
+            """,
+            (goal, experiment_id),
+        )
+        return cur.fetchall()

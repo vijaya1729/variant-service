@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from psycopg.errors import UniqueViolation
 from pydantic import ValidationError
 
-from app import db
+from app import db, stats
 from app.assignment import assign
 from app.config_cache import cache
 from app.models import (
@@ -17,6 +17,9 @@ from app.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+SRM_P_THRESHOLD = 0.001
+MIN_SAMPLE_EXPOSURES = 100
 
 TRANSITIONS: dict[str, set[str]] = {
     "draft": {"running"},
@@ -121,3 +124,52 @@ def track_conversion(raw_event: bytes) -> None:
         variant_key = _variant_key(event.experiment_id, event.visitor_id)
         if variant_key:
             db.record_conversion(event.experiment_id, event.visitor_id, variant_key, event.goal)
+
+
+def get_results(experiment_id: str, goal: str) -> dict:
+    rows = db.get_variant_counts(experiment_id, goal)
+    if not rows:
+        raise ExperimentNotFound(experiment_id)
+
+    exposures = [row["exposures"] for row in rows]
+    srm = stats.srm_test(exposures, [row["weight"] for row in rows])
+    srm_chi_square, srm_p_value = srm if srm else (None, None)
+    return {
+        "experiment_id": experiment_id,
+        "goal": goal,
+        "variants": [_variant_results(row, rows[0]) for row in rows],
+        "srm_chi_square": srm_chi_square,
+        "srm_p_value": srm_p_value,
+        "srm_detected": srm_p_value is not None and srm_p_value < SRM_P_THRESHOLD,
+        "min_sample_warning": min(exposures) < MIN_SAMPLE_EXPOSURES,
+    }
+
+
+def _rate(row: dict) -> float | None:
+    return row["conversions"] / row["exposures"] if row["exposures"] else None
+
+
+def _variant_results(row: dict, control: dict) -> dict:
+    interval = stats.wilson_interval(row["conversions"], row["exposures"])
+    rate = _rate(row)
+    control_rate = _rate(control)
+
+    lift = z_test = None
+    if row is not control:
+        if rate is not None and control_rate:
+            lift = rate / control_rate - 1
+        z_test = stats.two_proportion_z_test(
+            control["conversions"], control["exposures"], row["conversions"], row["exposures"]
+        )
+
+    return {
+        "key": row["key"],
+        "exposures": row["exposures"],
+        "conversions": row["conversions"],
+        "conversion_rate": rate,
+        "ci_low": interval[0] if interval else None,
+        "ci_high": interval[1] if interval else None,
+        "lift": lift,
+        "z": z_test[0] if z_test else None,
+        "p_value": z_test[1] if z_test else None,
+    }
