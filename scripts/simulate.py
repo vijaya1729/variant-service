@@ -6,8 +6,10 @@ python scripts/simulate.py --base-url https://example.vercel.app \
 
 import argparse
 import asyncio
+import json
 import math
 import random
+import re
 import sys
 import time
 import uuid
@@ -17,6 +19,7 @@ from dataclasses import dataclass, field
 import httpx
 
 ASSIGN_BUDGET_MS = 200
+SERVER_TIMING = re.compile(r"app;dur=([0-9.]+)")
 REQUEST_TIMEOUT_SECONDS = 10
 
 
@@ -25,6 +28,7 @@ class Tally:
     assigned: Counter = field(default_factory=Counter)
     converted: Counter = field(default_factory=Counter)
     latencies_ms: list[float] = field(default_factory=list)
+    server_ms: list[float] = field(default_factory=list)
     not_assigned: int = 0
     failed_requests: int = 0
 
@@ -67,13 +71,19 @@ async def simulate_visitor(
     async with limit:
         started = time.perf_counter()
         try:
+            # text/plain, like the snippet.
             response = await client.post(
-                "/assign", json={"visitor_id": visitor_id, "experiment_ids": [experiment]}
+                "/assign",
+                content=json.dumps({"visitor_id": visitor_id, "experiment_ids": [experiment]}),
+                headers={"Content-Type": "text/plain"},
             )
         except httpx.HTTPError:
             tally.failed_requests += 1
             return
         tally.latencies_ms.append((time.perf_counter() - started) * 1000)
+        server_timing = SERVER_TIMING.search(response.headers.get("Server-Timing", ""))
+        if server_timing:
+            tally.server_ms.append(float(server_timing.group(1)))
         if response.status_code != 200:
             tally.failed_requests += 1
             return
@@ -129,10 +139,18 @@ def report(tally: Tally, args: argparse.Namespace) -> None:
     latencies = sorted(tally.latencies_ms)
     if latencies:
         over_budget = sum(latency > ASSIGN_BUDGET_MS for latency in latencies)
-        print(f"\nassign latency over {len(latencies)} requests, seen from this client:")
+        print(f"\nassign round trip over {len(latencies)} requests, seen from this client:")
         print(f"p50: {percentile(latencies, 50):.1f} ms")
         print(f"p99: {percentile(latencies, 99):.1f} ms")
         print(f"over the snippet's {ASSIGN_BUDGET_MS} ms timeout: {over_budget}")
+
+    server = sorted(tally.server_ms)
+    if server:
+        print(f"\nassign server time over {len(server)} requests, from Server-Timing:")
+        print(f"p50: {percentile(server, 50):.2f} ms")
+        print(f"p99: {percentile(server, 99):.2f} ms")
+    else:
+        print("\nNo Server-Timing header in any response.")
 
     # /expose and /convert always return 202, so these counts prove nothing was stored.
     print("\nCounts above are what was sent. Compare them with /dashboard for what was stored.")
