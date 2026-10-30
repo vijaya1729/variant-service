@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -5,28 +6,34 @@ from app.main import app
 client = TestClient(app)
 
 
-def test_snippet_is_served_as_cacheable_javascript() -> None:
-    response = client.get("/snippet.js")
+@pytest.mark.parametrize(
+    ("path", "content_type"),
+    [
+        ("/snippet.js", "text/javascript"),
+        ("/styles.css", "text/css"),
+        ("/demo", "text/html"),
+        ("/dashboard", "text/html"),
+    ],
+)
+def test_page_is_served_with_the_right_content_type(path: str, content_type: str) -> None:
+    response = client.get(path)
 
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/javascript")
-    assert "public" in response.headers["cache-control"]
+    assert response.headers["content-type"].startswith(content_type)
 
 
-def test_snippet_never_uses_inner_html() -> None:
-    assert "innerHTML" not in client.get("/snippet.js").text
+def test_snippet_is_cacheable() -> None:
+    assert "public" in client.get("/snippet.js").headers["cache-control"]
 
 
-def test_demo_is_html_with_default_content() -> None:
-    response = client.get("/demo")
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    assert "Ship better pages, one test at a time" in response.text
+@pytest.mark.parametrize("path", ["/snippet.js", "/demo", "/dashboard"])
+def test_pages_never_use_inner_html(path: str) -> None:
+    assert "innerHTML" not in client.get(path).text
 
 
-def test_styles_are_served_as_css() -> None:
-    response = client.get("/styles.css")
+def test_demo_has_default_content_without_javascript() -> None:
+    assert "Ship better pages, one test at a time" in client.get("/demo").text
 
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/css")
+
+def test_dashboard_inputs_cannot_be_submitted_into_the_url() -> None:
+    assert " name=" not in client.get("/dashboard").text.split("<script>")[0].split("</head>")[1]

@@ -29,3 +29,8 @@ def styles() -> FileResponse:
 @pages.get("/demo")
 def demo() -> FileResponse:
     return FileResponse(STATIC_DIR / "demo.html", media_type="text/html")
+
+
+@pages.get("/dashboard")
+def dashboard() -> FileResponse:
+    return FileResponse(STATIC_DIR / "dashboard.html", media_type="text/html")

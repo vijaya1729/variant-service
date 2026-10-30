@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Experiment Results</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main>
+    <h1>Results</h1>
+
+    <!-- The inputs have no name attribute, so a failed script can't submit the key into the URL. -->
+    <form id="form" autocomplete="off">
+      <label>Experiment ID <input id="experiment" type="text" value="cta-test" required></label>
+      <label>Admin key <input id="key" type="password" required></label>
+      <button type="submit">Load results</button>
+    </form>
+
+    <p id="error" class="banner error" role="alert" hidden></p>
+    <p id="srm" class="banner" role="alert" hidden></p>
+    <p id="small-sample" class="banner" hidden>
+      Small sample: at least one variant has fewer than 100 exposures, so these numbers can swing a lot.
+    </p>
+
+    <div id="results" class="table-scroll" hidden>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Variant</th>
+            <th scope="col">Exposures</th>
+            <th scope="col">Conversions</th>
+            <th scope="col">Rate</th>
+            <th scope="col">95% CI</th>
+            <th scope="col">Lift</th>
+            <th scope="col">p-value</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+    const KEY_STORAGE = "variants_admin_key";
+    const COLUMNS = ["Variant", "Exposures", "Conversions", "Rate", "95% CI", "Lift", "p-value"];
+
+    const form = document.getElementById("form");
+    const keyInput = document.getElementById("key");
+    const errorBanner = document.getElementById("error");
+    const srmBanner = document.getElementById("srm");
+    const smallSample = document.getElementById("small-sample");
+    const results = document.getElementById("results");
+    const rows = document.getElementById("rows");
+
+    function readKey() {
+      try {
+        return sessionStorage.getItem(KEY_STORAGE) || "";
+      } catch (error) {
+        return "";
+      }
+    }
+
+    function saveKey(key) {
+      try {
+        sessionStorage.setItem(KEY_STORAGE, key);
+      } catch (error) {
+        // The key just lasts as long as the input does.
+      }
+    }
+
+    const percent = (value) => (value === null ? "–" : `${(value * 100).toFixed(2)}%`);
+
+    function formatLift(value) {
+      if (value === null) return "–";
+      return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`;
+    }
+
+    function formatP(value) {
+      if (value === null) return "–";
+      return value < 0.001 ? "< 0.001" : value.toFixed(3);
+    }
+
+    function addRow(variant, index) {
+      const interval = variant.ci_low === null ? "–" : `${percent(variant.ci_low)} – ${percent(variant.ci_high)}`;
+      const cells = [
+        variant.key,
+        variant.exposures.toLocaleString(),
+        variant.conversions.toLocaleString(),
+        percent(variant.conversion_rate),
+        interval,
+        index === 0 ? "control" : formatLift(variant.lift),
+        index === 0 ? "–" : formatP(variant.p_value),
+      ];
+      const row = rows.insertRow();
+      cells.forEach((text, column) => {
+        const cell = row.insertCell();
+        cell.textContent = text;
+        cell.dataset.label = COLUMNS[column];
+      });
+    }
+
+    function showError(message) {
+      errorBanner.textContent = message;
+      errorBanner.hidden = false;
+    }
+
+    function render(data) {
+      rows.replaceChildren();
+      data.variants.forEach(addRow);
+      results.hidden = false;
+      smallSample.hidden = !data.min_sample_warning;
+      if (data.srm_detected) {
+        srmBanner.textContent =
+          `Sample ratio mismatch (p = ${data.srm_p_value.toExponential(2)}). ` +
+          "The split doesn't match the weights, so assignment or tracking may be broken. Don't trust these results.";
+      }
+      srmBanner.hidden = !data.srm_detected;
+    }
+
+    async function load() {
+      errorBanner.hidden = true;
+      srmBanner.hidden = true;
+      smallSample.hidden = true;
+      results.hidden = true;
+
+      const id = encodeURIComponent(document.getElementById("experiment").value.trim());
+      try {
+        const response = await fetch(`/results/${id}`, { headers: { "X-Admin-Key": keyInput.value } });
+        if (response.status === 401) return showError("That admin key wasn't accepted.");
+        if (response.status === 404) return showError("No experiment with that ID.");
+        if (!response.ok) return showError(`Results failed to load (${response.status}).`);
+        render(await response.json());
+      } catch (error) {
+        showError("Couldn't reach the service.");
+      }
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveKey(keyInput.value);
+      load();
+    });
+
+    keyInput.value = readKey();
+  </script>
+</body>
+</html>
